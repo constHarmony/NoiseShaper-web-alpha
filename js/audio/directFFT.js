@@ -78,7 +78,7 @@ class DirectFFTManager {
             console.log('DirectFFTManager: Setting up direct FFT processor...');
             
             // Register the worklet processor
-            await this.audioContext.audioWorklet.addModule('/worklets/direct-fft-processor.js');
+            await this.audioContext.audioWorklet.addModule('worklets/direct-fft-processor.js');
             
             // Create the processor node
             this.processorNode = new AudioWorkletNode(this.audioContext, 'direct-fft-processor', {

@@ -66,7 +66,7 @@ class AdvancedFilterManager {
     async setupProcessor() {
         try {
             // Register the worklet processor
-            await this.audioContext.audioWorklet.addModule('/worklets/advanced-filter-processor.js');
+            await this.audioContext.audioWorklet.addModule('worklets/advanced-filter-processor.js');
             
             // Create the processor node
             this.processorNode = new AudioWorkletNode(this.audioContext, 'advanced-filter-processor');
