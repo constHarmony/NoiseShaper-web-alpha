@@ -18,6 +18,100 @@ class SimpleAudioExporter {
             fadeOutPower: 2.0,    // Python default
             fadeBeforeNorm: false // Default to "Normalize then Fade" (Python default)
         };
+
+        // Web Workers integration
+        this.workerPool = null;
+        this.workersSupported = false;
+        this.workersInitialized = false;
+        this.initializeWorkers();
+    }
+
+    /**
+     * Initialize Web Workers for parallel processing
+     */
+    async initializeWorkers() {
+        try {
+            console.log('🎯 SIMPLE EXPORT: Initializing Web Workers for parallel processing...');
+            
+            // Check if WorkerPool class is available
+            if (typeof WorkerPool === 'undefined') {
+                console.log('🎯 SIMPLE EXPORT: WorkerPool class not available, will use sequential processing');
+                return false;
+            }
+            
+            // Create worker pool
+            this.workerPool = new WorkerPool();
+            
+            // Wait for initialization
+            const initialized = await this.workerPool.initPromise;
+            
+            if (initialized) {
+                this.workersSupported = true;
+                this.workersInitialized = true;
+                console.log('🎯 SIMPLE EXPORT: Web Workers initialized successfully for parallel processing');
+                
+                // Set up progress callback
+                this.workerPool.setProgressCallback((progressInfo) => {
+                    if (this.currentProgressCallback) {
+                        // Enhance progress info with worker details
+                        this.currentProgressCallback({
+                            ...progressInfo,
+                            phase: 'processing',
+                            overallProgress: Math.round((progressInfo.completedJobs / progressInfo.totalJobs) * 100)
+                        });
+                    }
+                });
+                
+                return true;
+            } else {
+                console.log('🎯 SIMPLE EXPORT: Web Workers initialization failed, will use sequential processing');
+                return false;
+            }
+            
+        } catch (error) {
+            console.warn('🎯 SIMPLE EXPORT: Error initializing Web Workers:', error.message);
+            console.log('🎯 SIMPLE EXPORT: Will fall back to sequential processing');
+            this.workersSupported = false;
+            this.workersInitialized = false;
+            return false;
+        }
+    }
+
+    /**
+     * Efficiently find maximum absolute value in array (stack-safe for large arrays)
+     * @param {Float32Array} array - Input array
+     * @returns {number} Maximum absolute value
+     */
+    findMaxAbs(array) {
+        let max = 0;
+        for (let i = 0; i < array.length; i++) {
+            const abs = Math.abs(array[i]);
+            if (abs > max) max = abs;
+        }
+        return max;
+    }
+
+    /**
+     * Determine if we should use chunked processing based on memory requirements
+     * @param {number} totalSamples - Total samples needed
+     * @returns {boolean} True if chunked processing should be used
+     */
+    shouldUseChunkedProcessing(totalSamples) {
+        // Estimate memory requirements:
+        // - Audio data: totalSamples * 4 bytes
+        // - FFT processing: ~4x additional memory for complex arrays and padding
+        const estimatedMemoryMB = (totalSamples * 4 * 5) / (1024 * 1024);  // 5x for safety margin
+        
+        // Use chunked processing if estimated memory > 500MB
+        // This is conservative but ensures browser stability
+        const memoryLimitMB = 500;
+        const useChunked = estimatedMemoryMB > memoryLimitMB;
+        
+        console.log('🎵 MEMORY CHECK: Estimated memory needed:', Math.round(estimatedMemoryMB), 'MB');
+        console.log('🎵 MEMORY CHECK: Memory limit:', memoryLimitMB, 'MB');
+        console.log('🎵 MEMORY CHECK: Use chunked processing:', useChunked);
+        
+        return useChunked;
     }
 
     /**
@@ -27,11 +121,10 @@ class SimpleAudioExporter {
      * @returns {Float32Array} Normalized signal
      */
     normalizeSignal(signal, targetAmplitude = 0.5) {
-        console.log('🎵 NORMALIZE: Input max level:', Math.max(...signal.map(Math.abs)));
         console.log('🎵 NORMALIZE: Target amplitude:', targetAmplitude);
         
-        // Get the maximum absolute value
-        const maxAbs = Math.max(...signal.map(Math.abs));
+        // Get the maximum absolute value (essential for normalization algorithm)
+        const maxAbs = this.findMaxAbs(signal);
         
         if (maxAbs === 0) {
             console.log('🎵 NORMALIZE: Signal is silent, returning unchanged');
@@ -46,31 +139,57 @@ class SimpleAudioExporter {
             normalizedSignal[i] = signal[i] * scaleFactor;
         }
         
-        console.log('🎵 NORMALIZE: Output max level:', Math.max(...normalizedSignal.map(Math.abs)));
+        console.log('🎵 NORMALIZE: Normalized', signal.length, 'samples with scale factor:', scaleFactor);
         return normalizedSignal;
     }
 
     /**
-     * Export current configuration using simple approach (like Python version)
+     * Main export function - automatically chooses chunked or direct processing
      * @param {number} durationSeconds - Duration in seconds
-     * @param {Object} trackConfig - Track configuration from trackManager
-     * @param {Object} exportSettings - Export-specific settings (optional)
-     * @returns {Promise<Float32Array>} Rendered audio data
+     * @param {Object} trackConfig - Track configuration
+     * @param {Object} settings - Export settings
+     * @returns {Promise<Float32Array>} Exported audio data
      */
-    async exportSimple(durationSeconds, trackConfig, exportSettings = {}) {
+    async exportSimple(durationSeconds, trackConfig, settings = {}) {
         console.log('🎵 SIMPLE EXPORT: Starting with duration:', durationSeconds, 'seconds');
         
-        // Merge export settings
-        const settings = { ...this.exportSettings, ...exportSettings };
-        console.log('🎵 SIMPLE EXPORT: Export settings:', settings);
+        // Merge with default settings
+        const mergedSettings = Object.assign({}, this.exportSettings, settings);
+        console.log('🎵 SIMPLE EXPORT: Export settings:', mergedSettings);
         
-        const sampleRate = settings.exportSampleRate || 44100;  // Configurable sample rate
+        // Store progress callback for worker integration
+        this.currentProgressCallback = mergedSettings.onProgress;
+        
+        const sampleRate = mergedSettings.exportSampleRate || 44100;
         const totalSamples = Math.floor(durationSeconds * sampleRate);
         
         console.log('🎵 SIMPLE EXPORT: Sample rate:', sampleRate, 'Hz');
         console.log('🎵 SIMPLE EXPORT: Duration:', durationSeconds, 'seconds');
         console.log('🎵 SIMPLE EXPORT: Total samples needed:', totalSamples);
         console.log('🎵 SIMPLE EXPORT: Calculation:', durationSeconds, '×', sampleRate, '=', totalSamples);
+        
+        // Decide processing method based on memory requirements
+        if (this.shouldUseChunkedProcessing(totalSamples)) {
+            console.log('🎵 EXPORT MODE: Using chunked processing for large file');
+            return await this.exportChunked(durationSeconds, trackConfig, mergedSettings);
+        } else {
+            console.log('🎵 EXPORT MODE: Using direct processing for manageable file size');
+            return await this.exportDirect(durationSeconds, trackConfig, mergedSettings);
+        }
+    }
+
+    /**
+     * Direct export for smaller files (original method, renamed)
+     * @param {number} durationSeconds - Duration in seconds
+     * @param {Object} trackConfig - Track configuration
+     * @param {Object} settings - Export settings
+     * @returns {Promise<Float32Array>} Exported audio data
+     */
+    async exportDirect(durationSeconds, trackConfig, settings) {
+        console.log('🎵 DIRECT EXPORT: Starting direct export with duration:', durationSeconds, 'seconds');
+        
+        const sampleRate = settings.exportSampleRate || 44100;
+        const totalSamples = Math.floor(durationSeconds * sampleRate);
         
         // Initialize mix buffer
         let mixedData = new Float32Array(totalSamples);
@@ -91,7 +210,7 @@ class SimpleAudioExporter {
                 
                 // Generate white noise for this track
                 const trackNoise = this.generateWhiteNoise(totalSamples);
-                console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'generated noise, max level:', Math.max(...trackNoise.map(Math.abs)));
+                console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'generated', totalSamples, 'noise samples');
                 
                 // Apply filters to this track
                 let trackData = trackNoise;
@@ -104,7 +223,7 @@ class SimpleAudioExporter {
                         if (filter.enabled) {
                             console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'applying filter:', filter.type, 'gain:', filter.gain, 'dB', 'centerFreq:', filter.centerFreq, 'Hz');
                             trackData = this.applyFilterFFT(trackData, filter, sampleRate);
-                            console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'after filter, max level:', Math.max(...trackData.map(Math.abs)));
+                            console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'applied', filter.type, 'filter');
                         }
                     }
                 }
@@ -124,7 +243,7 @@ class SimpleAudioExporter {
                     mixedData[i] += trackData[i];
                 }
                 
-                console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'mixed, current mix max level:', Math.max(...mixedData.map(Math.abs)));
+                console.log('🎵 SIMPLE EXPORT: Track', trackIndex, 'mixed into final output');
             }
         } else {
             console.log('🎵 SIMPLE EXPORT: No tracks configured, generating single white noise');
@@ -132,7 +251,7 @@ class SimpleAudioExporter {
             mixedData = this.generateWhiteNoise(totalSamples);
         }
         
-        console.log('🎵 SIMPLE EXPORT: Final mixed data, max level:', Math.max(...mixedData.map(Math.abs)));
+        console.log('🎵 SIMPLE EXPORT: Final mixed data ready,', mixedData.length, 'samples');
         
         // Apply export-specific amplitude (like Python version)
         if (settings.exportAmplitude !== 1.0) {
@@ -188,9 +307,373 @@ class SimpleAudioExporter {
             }
         }
         
-        console.log('🎵 SIMPLE EXPORT: Final result, length:', mixedData.length, 'samples, max level:', Math.max(...mixedData.map(Math.abs)));
+        console.log('🎵 DIRECT EXPORT: Export complete,', mixedData.length, 'samples ready');
         
         return new Float32Array(mixedData);
+    }
+
+    /**
+     * Chunked export for large files - maintains perfect audio quality
+     * @param {number} durationSeconds - Duration in seconds
+     * @param {Object} trackConfig - Track configuration
+     * @param {Object} settings - Export settings
+     * @returns {Promise<Float32Array>} Exported audio data
+     */
+    async exportChunked(durationSeconds, trackConfig, settings) {
+        console.log('🎵 CHUNKED EXPORT: Starting chunked export with duration:', durationSeconds, 'seconds');
+        
+        const sampleRate = settings.exportSampleRate || 44100;
+        const totalSamples = Math.floor(durationSeconds * sampleRate);
+        
+        // Optimized chunk size: 30 seconds = ~1.3M samples = ~2M FFT size
+        // This is ~4x faster per chunk than 90 seconds due to FFT complexity O(N log N)
+        const chunkDurationSeconds = 30;
+        const chunkSamples = Math.floor(chunkDurationSeconds * sampleRate);
+        
+        console.log('🎵 CHUNKED EXPORT: Total samples:', totalSamples);
+        console.log('🎵 CHUNKED EXPORT: Chunk size:', chunkSamples, 'samples (', chunkDurationSeconds, 'seconds )');
+        
+        // Calculate number of chunks needed
+        const numChunks = Math.ceil(totalSamples / chunkSamples);
+        console.log('🎵 CHUNKED EXPORT: Processing', numChunks, 'chunks');
+        
+        // Check if we can use parallel processing
+        const useParallelProcessing = this.workersSupported && 
+                                     this.workersInitialized && 
+                                     this.workerPool && 
+                                     this.workerPool.isAvailable() &&
+                                     numChunks >= 2; // Only worth it for multiple chunks
+        
+        if (useParallelProcessing) {
+            console.log('🎯 CHUNKED EXPORT: Using PARALLEL processing with Web Workers');
+            return await this.exportChunkedParallel(durationSeconds, trackConfig, settings);
+        } else {
+            console.log('🎵 CHUNKED EXPORT: Using SEQUENTIAL processing (workers not available or not beneficial)');
+            return await this.exportChunkedSequential(durationSeconds, trackConfig, settings);
+        }
+    }
+
+    /**
+     * Parallel chunked export using Web Workers
+     */
+    async exportChunkedParallel(durationSeconds, trackConfig, settings) {
+        console.log('🎯 PARALLEL EXPORT: Starting parallel chunked export with Web Workers');
+        
+        const sampleRate = settings.exportSampleRate || 44100;
+        const totalSamples = Math.floor(durationSeconds * sampleRate);
+        
+        // Use smaller chunks for parallel processing to avoid memory issues in workers
+        // 10 seconds = ~441K samples = ~1M FFT size (manageable for workers)
+        const chunkDurationSeconds = 10;
+        const chunkSamples = Math.floor(chunkDurationSeconds * sampleRate);
+        const numChunks = Math.ceil(totalSamples / chunkSamples);
+        
+        console.log('🎯 PARALLEL EXPORT: Using optimized chunk size for workers:', chunkDurationSeconds, 'seconds');
+        
+        // Check if export was cancelled
+        if (settings.onProgress) {
+            const shouldContinue = settings.onProgress({
+                phase: 'starting',
+                chunksTotal: numChunks,
+                chunksCompleted: 0,
+                overallProgress: 0
+            });
+            if (!shouldContinue) {
+                throw new Error('Export cancelled by user');
+            }
+        }
+        
+        // Prepare chunk data for workers
+        const chunks = [];
+        for (let chunkIndex = 0; chunkIndex < numChunks; chunkIndex++) {
+            const chunkStart = chunkIndex * chunkSamples;
+            const chunkEnd = Math.min(chunkStart + chunkSamples, totalSamples);
+            const currentChunkSamples = chunkEnd - chunkStart;
+            const chunkDuration = currentChunkSamples / sampleRate;
+            
+            // Generate noise samples for this chunk (will be done in worker)
+            chunks.push({
+                index: chunkIndex,
+                samples: new Float32Array(currentChunkSamples), // Placeholder
+                duration: chunkDuration,
+                startSample: chunkStart,
+                endSample: chunkEnd
+            });
+        }
+        
+        // Process chunks in parallel using worker pool
+        console.log(`🎯 PARALLEL EXPORT: Processing ${numChunks} chunks in parallel...`);
+        const startTime = performance.now();
+        
+        const chunkResults = await this.workerPool.processChunksParallel(chunks, trackConfig, settings);
+        
+        const processingTime = performance.now() - startTime;
+        console.log(`🎯 PARALLEL EXPORT: Completed all chunks in ${processingTime.toFixed(2)}ms`);
+        console.log(`🎯 PARALLEL EXPORT: Average time per chunk: ${(processingTime / numChunks).toFixed(2)}ms`);
+        
+        // Assemble final result
+        const finalResult = new Float32Array(totalSamples);
+        let outputOffset = 0;
+        
+        for (let i = 0; i < chunkResults.length; i++) {
+            const chunkResult = chunkResults[i];
+            finalResult.set(chunkResult, outputOffset);
+            outputOffset += chunkResult.length;
+        }
+        
+        // Apply final processing (normalization and fade) to complete signal
+        console.log('🎯 PARALLEL EXPORT: Applying final processing to complete signal...');
+        
+        // Report final processing phase
+        if (settings.onProgress) {
+            const shouldContinue = settings.onProgress({
+                phase: 'finalizing',
+                chunksTotal: numChunks,
+                chunksCompleted: numChunks,
+                overallProgress: 100
+            });
+            if (!shouldContinue) {
+                throw new Error('Export cancelled by user');
+            }
+        }
+        
+        let finalData = finalResult;
+        
+        // Calculate fade samples
+        const fadeInSamples = settings.enableFadeIn ? 
+            Math.floor(settings.fadeInDuration * sampleRate) : 0;
+        const fadeOutSamples = settings.enableFadeOut ? 
+            Math.floor(settings.fadeOutDuration * sampleRate) : 0;
+        
+        // Apply fade and normalization in the correct order
+        if (settings.fadeBeforeNorm) {
+            // Apply fades first
+            if (fadeInSamples > 0 || fadeOutSamples > 0) {
+                console.log('🎯 PARALLEL EXPORT: Applying fades to complete signal...');
+                finalData = this.applyFadeEnvelope(
+                    finalData, fadeInSamples, fadeOutSamples,
+                    settings.fadeInPower, settings.fadeOutPower
+                );
+            }
+            
+            // Then normalize
+            if (settings.enableNormalization) {
+                console.log('🎯 PARALLEL EXPORT: Applying normalization to complete signal...');
+                finalData = this.normalizeSignal(finalData, settings.normalizeValue);
+            }
+        } else {
+            // Normalize first
+            if (settings.enableNormalization) {
+                console.log('🎯 PARALLEL EXPORT: Applying normalization to complete signal...');
+                finalData = this.normalizeSignal(finalData, settings.normalizeValue);
+            }
+            
+            // Then apply fades
+            if (fadeInSamples > 0 || fadeOutSamples > 0) {
+                console.log('🎯 PARALLEL EXPORT: Applying fades to complete signal...');
+                finalData = this.applyFadeEnvelope(
+                    finalData, fadeInSamples, fadeOutSamples,
+                    settings.fadeInPower, settings.fadeOutPower
+                );
+            }
+        }
+        
+        console.log('🎯 PARALLEL EXPORT: Export complete,', finalData.length, 'samples ready');
+        return finalData;
+    }
+
+    /**
+     * Sequential chunked export (original implementation)
+     */
+    async exportChunkedSequential(durationSeconds, trackConfig, settings) {
+        console.log('🎵 SEQUENTIAL EXPORT: Starting sequential chunked export');
+        
+        const sampleRate = settings.exportSampleRate || 44100;
+        const totalSamples = Math.floor(durationSeconds * sampleRate);
+        const chunkDurationSeconds = 30;
+        const chunkSamples = Math.floor(chunkDurationSeconds * sampleRate);
+        const numChunks = Math.ceil(totalSamples / chunkSamples);
+        
+        // Initialize result array
+        const finalResult = new Float32Array(totalSamples);
+        let outputOffset = 0;
+        
+        // Check if export was cancelled
+        if (settings.onProgress) {
+            const shouldContinue = settings.onProgress({
+                phase: 'starting',
+                chunksTotal: numChunks,
+                chunksCompleted: 0,
+                overallProgress: 0
+            });
+            if (!shouldContinue) {
+                throw new Error('Export cancelled by user');
+            }
+        }
+        
+        // Process each chunk sequentially
+        for (let chunkIndex = 0; chunkIndex < numChunks; chunkIndex++) {
+            const chunkStart = chunkIndex * chunkSamples;
+            const chunkEnd = Math.min(chunkStart + chunkSamples, totalSamples);
+            const currentChunkSamples = chunkEnd - chunkStart;
+            
+            console.log(`🎵 SEQUENTIAL CHUNK ${chunkIndex + 1}/${numChunks}: Processing samples ${chunkStart} to ${chunkEnd} (${currentChunkSamples} samples)`);
+            
+            // Create chunk duration and process it using existing direct export logic
+            const chunkDuration = currentChunkSamples / sampleRate;
+            
+            // Use direct export for this chunk (no recursion - direct call to processing logic)
+            const chunkResult = await this.processChunk(chunkDuration, trackConfig, settings);
+            
+            // Copy chunk result to final array
+            finalResult.set(chunkResult, outputOffset);
+            outputOffset += chunkResult.length;
+            
+            const progress = Math.round((chunkIndex + 1) / numChunks * 100);
+            console.log(`🎵 SEQUENTIAL CHUNK ${chunkIndex + 1}/${numChunks}: Completed, progress: ${progress}%`);
+            
+            // Report progress and check for cancellation
+            if (settings.onProgress) {
+                const shouldContinue = settings.onProgress({
+                    phase: 'processing',
+                    chunksTotal: numChunks,
+                    chunksCompleted: chunkIndex + 1,
+                    currentChunk: chunkIndex + 1,
+                    overallProgress: progress
+                });
+                if (!shouldContinue) {
+                    throw new Error('Export cancelled by user');
+                }
+            }
+            
+            // Allow UI to update between chunks
+            await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        
+        // Apply final processing (normalization and fade) to complete signal
+        console.log('🎵 SEQUENTIAL EXPORT: Applying final processing to complete signal...');
+        
+        // Report final processing phase
+        if (settings.onProgress) {
+            const shouldContinue = settings.onProgress({
+                phase: 'finalizing',
+                chunksTotal: numChunks,
+                chunksCompleted: numChunks,
+                overallProgress: 100
+            });
+            if (!shouldContinue) {
+                throw new Error('Export cancelled by user');
+            }
+        }
+        
+        let finalData = finalResult;
+        
+        // Calculate fade samples
+        const fadeInSamples = settings.enableFadeIn ? 
+            Math.floor(settings.fadeInDuration * sampleRate) : 0;
+        const fadeOutSamples = settings.enableFadeOut ? 
+            Math.floor(settings.fadeOutDuration * sampleRate) : 0;
+        
+        // Apply fade and normalization in the correct order
+        if (settings.fadeBeforeNorm) {
+            // Apply fades first
+            if (fadeInSamples > 0 || fadeOutSamples > 0) {
+                console.log('🎵 SEQUENTIAL EXPORT: Applying fades to complete signal...');
+                finalData = this.applyFadeEnvelope(
+                    finalData, fadeInSamples, fadeOutSamples,
+                    settings.fadeInPower, settings.fadeOutPower
+                );
+            }
+            
+            // Then normalize
+            if (settings.enableNormalization) {
+                console.log('🎵 SEQUENTIAL EXPORT: Applying normalization to complete signal...');
+                finalData = this.normalizeSignal(finalData, settings.normalizeValue);
+            }
+        } else {
+            // Normalize first
+            if (settings.enableNormalization) {
+                console.log('🎵 SEQUENTIAL EXPORT: Applying normalization to complete signal...');
+                finalData = this.normalizeSignal(finalData, settings.normalizeValue);
+            }
+            
+            // Then apply fades
+            if (fadeInSamples > 0 || fadeOutSamples > 0) {
+                console.log('🎵 SEQUENTIAL EXPORT: Applying fades to complete signal...');
+                finalData = this.applyFadeEnvelope(
+                    finalData, fadeInSamples, fadeOutSamples,
+                    settings.fadeInPower, settings.fadeOutPower
+                );
+            }
+        }
+        
+        console.log('🎵 SEQUENTIAL EXPORT: Export complete,', finalData.length, 'samples ready');
+        return finalData;
+    }
+
+    /**
+     * Process a single chunk (internal method for chunked export)
+     * @param {number} chunkDuration - Duration of chunk in seconds
+     * @param {Object} trackConfig - Track configuration
+     * @param {Object} settings - Export settings  
+     * @returns {Promise<Float32Array>} Processed chunk data
+     */
+    async processChunk(chunkDuration, trackConfig, settings) {
+        const sampleRate = settings.exportSampleRate || 44100;
+        const chunkSamples = Math.floor(chunkDuration * sampleRate);
+        
+        // Initialize chunk mix buffer
+        let mixedData = new Float32Array(chunkSamples);
+        
+        // Process each track and mix them together (same logic as direct export)
+        if (trackConfig.tracks && trackConfig.tracks.length > 0) {
+            for (let trackIndex = 0; trackIndex < trackConfig.tracks.length; trackIndex++) {
+                const track = trackConfig.tracks[trackIndex];
+                
+                if (!track.enabled) {
+                    continue;
+                }
+                
+                // Generate white noise for this track chunk
+                const trackNoise = this.generateWhiteNoise(chunkSamples);
+                
+                // Apply filters to this track chunk
+                let trackData = trackNoise;
+                
+                if (track.filters && track.filters.length > 0) {
+                    for (let i = 0; i < track.filters.length; i++) {
+                        const filter = track.filters[i];
+                        if (filter.enabled) {
+                            trackData = this.applyFilterFFT(trackData, filter, sampleRate);
+                        }
+                    }
+                }
+                
+                // Apply track gain
+                if (track.gain !== undefined && track.gain !== 1.0) {
+                    const trackGainLinear = typeof track.gain === 'number' && track.gain > 0 && track.gain < 10
+                        ? track.gain  // Already linear
+                        : Math.pow(10, (track.gain || 0) / 20);  // Convert dB to linear
+                    
+                    trackData = trackData.map(sample => sample * trackGainLinear);
+                }
+                
+                // Mix this track into the chunk
+                for (let i = 0; i < chunkSamples; i++) {
+                    mixedData[i] += trackData[i];
+                }
+            }
+        } else {
+            // Fallback: generate single white noise if no tracks
+            mixedData = this.generateWhiteNoise(chunkSamples);
+        }
+        
+        // Apply export-specific amplitude (like Python version)
+        if (settings.exportAmplitude !== 1.0) {
+            mixedData = mixedData.map(sample => sample * settings.exportAmplitude);
+        }
+        
+        return mixedData;
     }
 
     /**
@@ -215,7 +698,8 @@ class SimpleAudioExporter {
      * @returns {Float32Array} Filtered audio data
      */
     applyFilterFFT(data, filter, sampleRate) {
-        console.log('🎵 FFT FILTER: Applying', filter.type, 'filter to', data.length, 'samples');
+        // Reduced logging for performance - only log filter type, not sample count
+        console.log('🎵 FFT FILTER:', filter.type);
         
         // For now, implement plateau filter (most common in our tests)
         if (filter.type === 'plateau') {
@@ -235,17 +719,12 @@ class SimpleAudioExporter {
      * @returns {Float32Array} Filtered audio data
      */
     applyPlateauFilter(data, filter, sampleRate) {
-        console.log('🎵 PLATEAU FILTER: centerFreq:', filter.centerFreq, 'width:', filter.width, 'gain:', filter.gain, 'dB');
-        console.log('🎵 PLATEAU FILTER: Input data length:', data.length, 'samples');
-        
         // Create FFT-friendly size (power of 2)
         const fftSize = Math.pow(2, Math.ceil(Math.log2(data.length)));
-        console.log('🎵 PLATEAU FILTER: Original size:', data.length, 'FFT size:', fftSize);
         
         // Pad data to FFT size
         const paddedData = new Float32Array(fftSize);
         paddedData.set(data);
-        console.log('🎵 PLATEAU FILTER: Padded data length:', paddedData.length, 'samples');
         
         // Convert to complex numbers for FFT
         const complexData = new Array(fftSize);
@@ -255,14 +734,12 @@ class SimpleAudioExporter {
         
         // Apply FFT
         const spectrum = this.fft(complexData);
-        console.log('🎵 PLATEAU FILTER: FFT spectrum length:', spectrum.length, 'bins');
         
         // Create frequency mask (plateau shape)
         const mask = this.createPlateauMask(fftSize, filter.centerFreq, filter.width, filter.flatWidth, sampleRate);
         
         // Convert filter gain from dB to linear
         const gainLinear = Math.pow(10, (filter.gain || 0) / 20);
-        console.log('🎵 PLATEAU FILTER: Gain linear:', gainLinear, '(from', filter.gain, 'dB)');
         
         // Apply filter mask with gain
         for (let i = 0; i < fftSize; i++) {
@@ -273,16 +750,12 @@ class SimpleAudioExporter {
         
         // Apply inverse FFT
         const filteredComplex = this.ifft(spectrum);
-        console.log('🎵 PLATEAU FILTER: IFFT result length:', filteredComplex.length, 'samples');
         
         // Convert back to real values and trim to original size
         const result = new Float32Array(data.length);
         for (let i = 0; i < data.length; i++) {
             result[i] = filteredComplex[i][0]; // Take real part
         }
-        
-        console.log('🎵 PLATEAU FILTER: Output data length:', result.length, 'samples (trimmed from', filteredComplex.length, ')');
-        console.log('🎵 PLATEAU FILTER: Expected length:', data.length, 'samples');
         
         return result;
     }
@@ -329,7 +802,6 @@ class SimpleAudioExporter {
             }
         }
         
-        console.log('🎵 PLATEAU MASK: Created mask, active bins:', mask.filter(v => v > 0).length, '/', fftSize);
         return mask;
     }
 
@@ -390,8 +862,7 @@ class SimpleAudioExporter {
      * @returns {Float32Array} Signal with fade envelope applied
      */
     applyFadeEnvelope(signal, fadeInSamples, fadeOutSamples, fadeInPower = 2.0, fadeOutPower = 2.0) {
-        console.log('🎵 FADE: Applying fade envelope');
-        console.log('🎵 FADE: Input max level:', Math.max(...signal.map(Math.abs)));
+        console.log('🎵 FADE: Applying fade envelope to', signal.length, 'samples');
         console.log('🎵 FADE: Fade-in samples:', fadeInSamples, 'Fade-out samples:', fadeOutSamples);
         
         if (fadeInSamples <= 0 && fadeOutSamples <= 0) {
@@ -427,7 +898,7 @@ class SimpleAudioExporter {
             result[i] = signal[i] * envelope;
         }
         
-        console.log('🎵 FADE: Output max level:', Math.max(...result.map(Math.abs)));
+        console.log('🎵 FADE: Fade envelope applied successfully');
         return result;
     }
 

@@ -626,10 +626,12 @@ class ExportManager extends EventTarget {
             this.showProgress();
             await this.performExport(settings);
             this.hideProgress();
+            this.hideExportProgress();
             this.hide();
         } catch (error) {
             console.error('Export failed:', error);
             this.hideProgress();
+            this.hideExportProgress();
             this.showError(`Export failed: ${error.message}`);
         }
     }
@@ -739,12 +741,27 @@ class ExportManager extends EventTarget {
         console.log('🎵 EXPORT MANAGER: Sample rate from UI:', settings.exportSampleRate);
         console.log('🎵 EXPORT MANAGER: Sample rate passed to exporter:', exportSettings.exportSampleRate);
         
+        // Add progress callback and cancel support
+        let exportCancelled = false;
+        
+        exportSettings.onProgress = (progressInfo) => {
+            // Update progress UI
+            this.updateExportProgress(progressInfo);
+            
+            // Return false to cancel export
+            return !exportCancelled;
+        };
+        
+        // Store cancel function for UI
+        this.cancelExport = () => {
+            exportCancelled = true;
+        };
+        
         // Use the simple exporter (Python version approach)
         const result = await this.simpleExporter.exportSimple(durationSeconds, trackConfig, exportSettings);
         
         console.log('🎵 SIMPLE EXPORT: generateClipAudio result:', {
             length: result.length,
-            maxLevel: Math.max(...result.map(Math.abs)),
             hasNonZero: result.some(sample => sample !== 0)
         });
         
@@ -989,6 +1006,197 @@ class ExportManager extends EventTarget {
     
     emit(eventName, data = null) {
         this.dispatchEvent(new CustomEvent(eventName, { detail: data }));
+    }
+
+    /**
+     * Update export progress UI during chunked processing
+     * @param {Object} progressInfo - Progress information from exporter
+     */
+    updateExportProgress(progressInfo) {
+        // Use existing progress elements from the HTML
+        const progressContainer = document.getElementById('exportProgressContainer');
+        const progressFill = document.getElementById('exportProgressFill');
+        const progressText = document.getElementById('exportProgressText');
+        const modalActions = document.getElementById('exportModalActions');
+        
+        if (!progressContainer || !progressFill || !progressText || !modalActions) return;
+        
+        // Find or create chunked progress elements
+        let chunkProgressContainer = modalActions.querySelector('.chunk-progress-container');
+        if (!chunkProgressContainer) {
+            chunkProgressContainer = document.createElement('div');
+            chunkProgressContainer.className = 'chunk-progress-container';
+            chunkProgressContainer.style.cssText = `
+                margin-bottom: 15px;
+                padding: 12px;
+                background: var(--bg-secondary);
+                border: 1px solid var(--border-color);
+                border-radius: 6px;
+                display: none;
+            `;
+            
+            // Chunk progress bar
+            const chunkProgressBar = document.createElement('div');
+            chunkProgressBar.className = 'chunk-progress-bar';
+            chunkProgressBar.style.cssText = `
+                width: 100%;
+                height: 16px;
+                background: var(--bg-primary);
+                border-radius: 8px;
+                overflow: hidden;
+                margin-bottom: 8px;
+            `;
+            
+            const chunkProgressFill = document.createElement('div');
+            chunkProgressFill.className = 'chunk-progress-fill';
+            chunkProgressFill.style.cssText = `
+                height: 100%;
+                background: linear-gradient(90deg, #4CAF50, #45a049);
+                width: 0%;
+                transition: width 0.3s ease;
+                border-radius: 8px;
+            `;
+            
+            chunkProgressBar.appendChild(chunkProgressFill);
+            chunkProgressContainer.appendChild(chunkProgressBar);
+            
+            // Chunk progress text
+            const chunkProgressText = document.createElement('div');
+            chunkProgressText.className = 'chunk-progress-text';
+            chunkProgressText.style.cssText = `
+                color: var(--text-primary);
+                font-size: 14px;
+                text-align: center;
+                margin-bottom: 10px;
+                font-weight: 500;
+            `;
+            chunkProgressContainer.appendChild(chunkProgressText);
+            
+            // Cancel button
+            const cancelButton = document.createElement('button');
+            cancelButton.className = 'chunk-cancel-btn';
+            cancelButton.textContent = 'Cancel Export';
+            cancelButton.style.cssText = `
+                background: var(--accent-red, #f44336);
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                width: 100%;
+                font-weight: 500;
+                transition: all 0.2s ease;
+            `;
+            
+            cancelButton.onmouseover = () => {
+                if (!cancelButton.disabled) {
+                    cancelButton.style.background = '#d32f2f';
+                }
+            };
+            
+            cancelButton.onmouseout = () => {
+                if (!cancelButton.disabled) {
+                    cancelButton.style.background = 'var(--accent-red, #f44336)';
+                }
+            };
+            
+            cancelButton.onclick = () => {
+                if (this.cancelExport) {
+                    this.cancelExport();
+                    chunkProgressText.textContent = 'Cancelling export...';
+                    cancelButton.disabled = true;
+                    cancelButton.style.background = '#666';
+                    cancelButton.style.cursor = 'not-allowed';
+                }
+            };
+            
+            chunkProgressContainer.appendChild(cancelButton);
+            
+            // Insert before the modal actions
+            modalActions.parentNode.insertBefore(chunkProgressContainer, modalActions);
+        }
+        
+        // Update display based on phase
+        if (progressInfo.phase === 'starting') {
+            // Show chunk progress
+            chunkProgressContainer.style.display = 'block';
+            progressContainer.style.display = 'block';
+            
+            const chunkProgressFill = chunkProgressContainer.querySelector('.chunk-progress-fill');
+            const chunkProgressText = chunkProgressContainer.querySelector('.chunk-progress-text');
+            const cancelButton = chunkProgressContainer.querySelector('.chunk-cancel-btn');
+            
+            chunkProgressText.textContent = `Starting export... (${progressInfo.chunksTotal} chunks)`;
+            chunkProgressFill.style.width = '0%';
+            cancelButton.disabled = false;
+            cancelButton.style.background = 'var(--accent-red, #f44336)';
+            cancelButton.style.cursor = 'pointer';
+            
+            // Update main progress
+            progressText.textContent = 'Preparing chunked export...';
+            progressFill.style.width = '0%';
+            
+        } else if (progressInfo.phase === 'processing') {
+            const chunkProgressFill = chunkProgressContainer.querySelector('.chunk-progress-fill');
+            const chunkProgressText = chunkProgressContainer.querySelector('.chunk-progress-text');
+            
+            // Handle both parallel and sequential progress reporting
+            if (progressInfo.type === 'workerProgress') {
+                // Parallel processing with Web Workers
+                const activeWorkers = progressInfo.activeWorkers || 0;
+                const completedJobs = progressInfo.completedJobs || 0;
+                const totalJobs = progressInfo.totalJobs || 1;
+                const avgTime = progressInfo.averageProcessingTime || 0;
+                
+                chunkProgressText.textContent = `🎯 Processing ${activeWorkers} chunks in parallel (${completedJobs}/${totalJobs} completed) - Avg: ${avgTime.toFixed(1)}ms`;
+                chunkProgressFill.style.width = progressInfo.overallProgress + '%';
+                
+                // Update main progress
+                progressText.textContent = `🎯 Parallel Export: ${progressInfo.overallProgress}% (${activeWorkers} workers active)`;
+                progressFill.style.width = progressInfo.overallProgress + '%';
+                
+            } else {
+                // Sequential processing (existing behavior)
+                chunkProgressText.textContent = `🎵 Processing chunk ${progressInfo.currentChunk} of ${progressInfo.chunksTotal}`;
+                chunkProgressFill.style.width = progressInfo.overallProgress + '%';
+                
+                // Update main progress
+                progressText.textContent = `🎵 Sequential Export: ${progressInfo.overallProgress}%`;
+                progressFill.style.width = progressInfo.overallProgress + '%';
+            }
+            
+        } else if (progressInfo.phase === 'finalizing') {
+            const chunkProgressText = chunkProgressContainer.querySelector('.chunk-progress-text');
+            const chunkProgressFill = chunkProgressContainer.querySelector('.chunk-progress-fill');
+            const cancelButton = chunkProgressContainer.querySelector('.chunk-cancel-btn');
+            
+            chunkProgressText.textContent = 'Finalizing export (normalization & fades)...';
+            chunkProgressFill.style.width = '100%';
+            cancelButton.disabled = true;
+            cancelButton.style.background = '#666';
+            cancelButton.style.cursor = 'not-allowed';
+            
+            // Update main progress
+            progressText.textContent = 'Finalizing export...';
+            progressFill.style.width = '100%';
+        }
+    }
+
+    /**
+     * Hide export progress UI
+     */
+    hideExportProgress() {
+        const modalActions = document.getElementById('exportModalActions');
+        if (!modalActions) return;
+        
+        const chunkProgressContainer = modalActions.parentNode.querySelector('.chunk-progress-container');
+        if (chunkProgressContainer) {
+            chunkProgressContainer.style.display = 'none';
+        }
+        
+        // Clear cancel function
+        this.cancelExport = null;
     }
 }
 
