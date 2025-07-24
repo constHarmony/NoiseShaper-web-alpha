@@ -215,10 +215,10 @@ class ExportManager extends EventTarget {
     getDefaultSettings() {
         return {
             // Audio Generation
-            duration: 10.0, // 10ms default for critical fade processing
-            clips: 40, // 40 clips as requested
+            duration: 60000.0, // 1 minute default (60 seconds in milliseconds)
+            clips: 5, // 5 clips as requested
             silenceEnabled: true, // enabled by default
-            silenceDuration: 190.0, // milliseconds
+            silenceDuration: 10000.0, // 10 seconds in milliseconds
             finalSilence: true, // include final silence by default
             
             // Processing
@@ -227,10 +227,10 @@ class ExportManager extends EventTarget {
             normalizationValue: 0.5, // Python default
             processOrder: 'fade-then-normalize',
             fadeInEnabled: true, // enabled by default as requested
-            fadeInDuration: 1.0, // 1 millisecond minimum
+            fadeInDuration: 5000.0, // 5 seconds in milliseconds
             fadeInPower: 2.0, // hardcoded power value
             fadeOutEnabled: true, // enabled by default as requested
-            fadeOutDuration: 1.0, // 1 millisecond minimum
+            fadeOutDuration: 5000.0, // 5 seconds in milliseconds
             fadeOutPower: 2.0, // hardcoded power value
             
             // Output

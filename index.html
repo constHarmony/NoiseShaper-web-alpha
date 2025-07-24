@@ -203,17 +203,17 @@
                     <div class="export-control-group">
                         <label class="export-label" for="exportDurationTime">Duration</label>
                         <input type="text" id="exportDurationTime" class="export-time-input" 
-                               value="00H 00M 00S 010ms" placeholder="00H 00M 00S 010ms">
+                               value="00H 01M 00S 000ms" placeholder="00H 01M 00S 000ms">
                         <input type="range" id="exportDurationSlider" class="export-slider" 
-                               min="0.001" max="36000" step="0.001" value="0.01">
+                               min="0.001" max="36000" step="0.001" value="60">
                     </div>
                     
                     <div class="export-control-group">
                         <label class="export-label" for="exportClipsInput">Audio Clips</label>
                         <input type="number" id="exportClipsInput" class="export-number-input" 
-                               value="40" min="1" max="100" step="1">
+                               value="5" min="1" max="100" step="1">
                         <input type="range" id="exportClipsSlider" class="export-slider" 
-                               min="1" max="100" step="1" value="40">
+                               min="1" max="100" step="1" value="5">
                     </div>
                     
                     <div class="export-control-group">
@@ -222,9 +222,9 @@
                             <span class="export-checkbox-label">Silence between clips</span>
                         </label>
                         <input type="text" id="exportSilenceTime" class="export-time-input" 
-                               value="00H 00M 00S 190ms" placeholder="00H 00M 00S 190ms">
+                               value="00H 00M 10S 000ms" placeholder="00H 00M 10S 000ms">
                         <input type="range" id="exportSilenceSlider" class="export-slider" 
-                               min="0.001" max="36000" step="0.001" value="0.19">
+                               min="0.001" max="36000" step="0.001" value="10">
                     </div>
                     
                     <div class="export-control-group">
@@ -265,9 +265,9 @@
                                 <span class="export-checkbox-label">Fade In</span>
                             </label>
                             <input type="text" id="exportFadeInTime" class="export-time-input" 
-                                   value="00H 00M 00S 001ms" placeholder="00H 00M 00S 001ms">
+                                   value="00H 00M 05S 000ms" placeholder="00H 00M 05S 000ms">
                             <input type="range" id="exportFadeInSlider" class="export-slider" 
-                                   min="0.001" max="36000" step="0.001" value="0.001">
+                                   min="0.001" max="36000" step="0.001" value="5">
                         </div>
                         
                         <div class="export-fade-group">
@@ -276,9 +276,9 @@
                                 <span class="export-checkbox-label">Fade Out</span>
                             </label>
                             <input type="text" id="exportFadeOutTime" class="export-time-input" 
-                                   value="00H 00M 00S 001ms" placeholder="00H 00M 00S 001ms">
+                                   value="00H 00M 05S 000ms" placeholder="00H 00M 05S 000ms">
                             <input type="range" id="exportFadeOutSlider" class="export-slider" 
-                                   min="0.001" max="36000" step="0.001" value="0.001">
+                                   min="0.001" max="36000" step="0.001" value="5">
                         </div>
                     </div>
                     

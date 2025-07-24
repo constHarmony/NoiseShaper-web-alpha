@@ -12,8 +12,8 @@ class SimpleAudioExporter {
             exportAmplitude: 1.0,  // Separate from UI master gain
             enableFadeIn: true,   // Python default
             enableFadeOut: true,  // Python default
-            fadeInDuration: 0.001,  // 1ms default (Python default)
-            fadeOutDuration: 0.001, // 1ms default (Python default)
+            fadeInDuration: 5.0,  // 5 seconds default
+            fadeOutDuration: 5.0, // 5 seconds default
             fadeInPower: 2.0,     // Python default
             fadeOutPower: 2.0,    // Python default
             fadeBeforeNorm: false // Default to "Normalize then Fade" (Python default)
